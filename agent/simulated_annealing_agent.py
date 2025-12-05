@@ -9,6 +9,7 @@ def extraire_liste_operations(tableau_patients):
         for ope in range(len(tableau_patients[patient])):
             if any(comp > 0 for comp in tableau_patients[patient][ope]):
                 operations.append([patient, ope])
+    random.shuffle(operations)  # Mélanger pour avoir une solution initiale aléatoire
     return operations
 
 

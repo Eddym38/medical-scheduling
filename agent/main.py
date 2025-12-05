@@ -13,12 +13,13 @@ competence_matrix = load_competence_matrix("competence_matrix_100.json")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-def run_simulation(n_steps=100):
+def run_simulation(n_steps=150, mode="pipeline"):
     """
     Lance une simulation multi-agent.
 
     Args:
         n_steps: Nombre d'étapes de simulation
+        mode: "pipeline" (chaîne séquentielle) ou "parallele" (tous en même temps)
     """
     print("=" * 70)
     print(" " * 20 + "SIMULATION MULTI-AGENT")
@@ -26,20 +27,24 @@ def run_simulation(n_steps=100):
     print()
 
     # Créer le modèle avec les agents
+    # En mode pipeline: Simulated (50 steps) → Tabu (50 steps) → Genetic (50 steps)
     model = SchedulingModel(
         competence_matrix=competence_matrix,
         n_genetic=1,      # 1 agent génétique
         n_simulated=1,    # 1 agent recuit simulé
-        n_tabu=1,          # 1 agent Tabu
-        collaboratif=True  # Mode collaboratif activé
-
+        n_tabu=1,         # 1 agent Tabu
+        mode=mode,        # Mode pipeline ou parallèle
+        steps_par_phase=50  # 50 étapes par agent en mode pipeline
     )
 
+    print(f"Mode: {mode.upper()}")
     print(f"Agents créés: {len(model.my_agents)}")
     for i, agent in enumerate(model.my_agents):
         agent_type = type(agent).__name__
         print(f"  - Agent {i+1}: {agent_type}")
     print(f"Étapes de simulation: {n_steps}")
+    if mode == "pipeline":
+        print(f"Étapes par phase: {model.steps_par_phase}")
     print()
 
     # Exécuter la simulation
@@ -83,4 +88,4 @@ def run_simulation(n_steps=100):
 
 
 if __name__ == "__main__":
-    model = run_simulation(n_steps=100)
+    model = run_simulation(n_steps=150, mode="pipeline")
