@@ -3,8 +3,11 @@ Modèle Mesa pour la simulation multi-agent.
 Coordonne les agents et gère l'environnement partagé.
 """
 from mesa import Model
-from mesa.time import RandomActivation
 from mesa.datacollection import DataCollector
+# Créer les agents
+from genetic_agent import GeneticAgent
+from simulated_annealing_agent import SimulatedAnnealingAgent
+from tabu_agent import TabuAgent
 
 
 class SchedulingModel(Model):
@@ -22,36 +25,29 @@ class SchedulingModel(Model):
         """
         super().__init__()
         self.competence_matrix = competence_matrix
-        self.schedule = RandomActivation(self)
+
+        # Liste manuelle des agents (pas de scheduler)
+        self.my_agents = []
 
         # Meilleure solution globale trouvée par tous les agents
         self.global_best_solution = None
         self.global_best_makespan = float('inf')
 
-        # Créer les agents
-        from .genetic_agent import GeneticAgent
-        from .simulated_annealing_agent import SimulatedAnnealingAgent
-        from .tabu_agent import TabuAgent
-
-        agent_id = 0
-
         # Agents génétiques
         for i in range(n_genetic):
-            agent = GeneticAgent(agent_id, self)
-            self.schedule.add(agent)
-            agent_id += 1
+            agent = GeneticAgent(
+                model=self, inner_population_size=20, collaboratif=False, mutation_rate=0.2)
+            self.my_agents.append(agent)
 
         # Agents recuit simulé
         for i in range(n_simulated):
-            agent = SimulatedAnnealingAgent(agent_id, self)
-            self.schedule.add(agent)
-            agent_id += 1
+            agent = SimulatedAnnealingAgent(self, collaboratif=False)
+            self.my_agents.append(agent)
 
         # Agents Tabu
         for i in range(n_tabu):
-            agent = TabuAgent(agent_id, self)
-            self.schedule.add(agent)
-            agent_id += 1
+            agent = TabuAgent(self, collaboratif=False)
+            self.my_agents.append(agent)
 
         # Collecteur de données
         self.datacollector = DataCollector(
@@ -61,9 +57,13 @@ class SchedulingModel(Model):
         )
 
     def step(self):
-        """Une étape de simulation."""
+        """Une étape de simulation - exécute step() de tous les agents."""
+        # Exécuter manuellement chaque agent
+        for agent in self.my_agents:
+            agent.step()
+
+        # Collecter les données
         self.datacollector.collect(self)
-        self.schedule.step()
 
     def update_global_best(self, solution, makespan):
         """

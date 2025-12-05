@@ -1,8 +1,9 @@
 
 
+import random
 import numpy as np
 from typing import Dict, List, Tuple
-
+from mesa import Agent
 
 
 def decode_chromosome(chromosome, competence_matrix):
@@ -105,13 +106,16 @@ def calculate_makespan(solution):
     return len(solution[0])
 
 # ----------------------- Utilitaires de conversion -----------------------
+
+
 def normalize_competence_matrix(competence_matrix: List[List[List[int]]]) -> np.ndarray:
     """Convertit une matrice de compétences irrégulière en tableau numpy régulier."""
     num_patients = len(competence_matrix)
     max_operations = max(len(patient_ops) for patient_ops in competence_matrix)
     num_skills = len(competence_matrix[0][0])
 
-    normalized = np.zeros((num_patients, max_operations, num_skills), dtype=int)
+    normalized = np.zeros(
+        (num_patients, max_operations, num_skills), dtype=int)
 
     for p in range(num_patients):
         for o in range(len(competence_matrix[p])):
@@ -124,7 +128,8 @@ def normalize_competence_matrix(competence_matrix: List[List[List[int]]]) -> np.
 def build_tasks_by_comp(C: np.ndarray) -> Dict[int, List[Tuple[str, int, int, int]]]:
     """Construit pour chaque compétence k la liste des tâches unitaires."""
     P, O, K = C.shape
-    by_comp: Dict[int, List[Tuple[str, int, int, int]]] = {k: [] for k in range(K)}
+    by_comp: Dict[int, List[Tuple[str, int, int, int]]] = {
+        k: [] for k in range(K)}
     for p in range(P):
         for o in range(O):
             for k in range(K):
@@ -150,7 +155,8 @@ def evaluate_with_logs(schedule: Dict[int, List[Tuple[str, int, int, int]]], C: 
     P, O, K = C.shape
     queues = {k: lst[:] for k, lst in schedule.items()}
     running: Dict[int, Tuple[str, int]] = {k: None for k in range(K)}
-    remaining = {(p, o): int(C[p, o].sum()) for p in range(P) for o in range(O)}
+    remaining = {(p, o): int(C[p, o].sum())
+                 for p in range(P) for o in range(O)}
 
     next_op = {}
     for p in range(P):
@@ -179,7 +185,7 @@ def evaluate_with_logs(schedule: Dict[int, List[Tuple[str, int, int, int]]], C: 
                 del q[chosen]
                 running[k] = (tid, t + 1)
                 logs.append({"comp": k, "patient": p, "op": o,
-                           "task_id": tid, "start_tick": t, "end_tick": t + 1})
+                             "task_id": tid, "start_tick": t, "end_tick": t + 1})
 
         if all(r is None for r in running.values()):
             raise RuntimeError("Blocage : aucune tâche en cours ni éligible.")
@@ -215,7 +221,7 @@ def eval_cmax(schedule: Dict[int, List[Tuple[str, int, int, int]]], C: np.ndarra
 
 
 def apply_insertion(schedule: Dict[int, List[Tuple[str, int, int, int]]],
-                   k: int, i: int, j: int) -> Dict[int, List[Tuple[str, int, int, int]]]:
+                    k: int, i: int, j: int) -> Dict[int, List[Tuple[str, int, int, int]]]:
     """Insère l'élément i à la position j dans la file de la compétence k."""
     new = {kk: lst[:] for kk, lst in schedule.items()}
     if len(new[k]) < 2 or i == j:
@@ -304,7 +310,7 @@ class TabuAgent(Agent):
             self.makespan,
             self.tabu_dict,
             self.iteration,
-            self.model.C_array,
+            self.C_array,
             tenure=self.tenure,
             candidate_size=self.candidate_size
         )
@@ -314,12 +320,17 @@ class TabuAgent(Agent):
     def __init__(self, model, collaboratif=False, tenure=7, candidate_size=40):
         super().__init__(model)
 
+        # Normaliser la matrice de compétences (format numpy pour tabu)
+        self.C_array = normalize_competence_matrix(
+            self.model.competence_matrix)
+
         # Initialiser le planning (tâches par compétence)
-        self.current_schedule = build_tasks_by_comp(self.model.C_array)
-        self.best_schedule = {k: lst[:] for k, lst in self.current_schedule.items()}
+        self.current_schedule = build_tasks_by_comp(self.C_array)
+        self.best_schedule = {k: lst[:]
+                              for k, lst in self.current_schedule.items()}
 
         # Calculer le makespan initial
-        self.makespan = eval_cmax(self.best_schedule, self.model.C_array)
+        self.makespan = eval_cmax(self.best_schedule, self.C_array)
 
         # Paramètres de la recherche tabu
         self.tabu_dict = {}
@@ -336,46 +347,19 @@ class TabuAgent(Agent):
         min_makespan = self.makespan
         best_agent = None
 
-        for a in self.model.agents:
+        for a in self.model.my_agents:
             if hasattr(a, 'makespan') and a.makespan < min_makespan:
                 min_makespan = a.makespan
                 best_agent = a
 
         if best_agent is not None:
             self.makespan = best_agent.makespan
-            self.best_schedule = {k: lst[:] for k, lst in best_agent.best_schedule.items()}
-            self.current_schedule = {k: lst[:] for k, lst in best_agent.current_schedule.items()}
+            self.best_schedule = {k: lst[:]
+                                  for k, lst in best_agent.best_schedule.items()}
+            self.current_schedule = {
+                k: lst[:] for k, lst in best_agent.current_schedule.items()}
 
     def step(self):
         self.tabu_search_step()
         if self.collaboratif:
             self.contact()
-
-
-
-class OptimisationTabuModel(Model):
-    """Modèle multi-agent pour l'optimisation avec recherche tabu."""
-
-    def __init__(self, competence_matrix, NV1, tenure=7, candidate_size=40):
-        super().__init__()
-        self.competence_matrix = competence_matrix
-        self.C_array = normalize_competence_matrix(competence_matrix)
-        self.NV1 = NV1
-
-        # Create agents
-        for i in range(NV1-1):
-            a = TabuAgent(self, collaboratif=True, tenure=tenure, candidate_size=candidate_size)
-
-        TabuAgent(self, collaboratif=False, tenure=tenure, candidate_size=candidate_size)
-
-        self.datacollector = DataCollector(
-            agent_reporters={"Makespan": lambda a: a.makespan}
-        )
-
-    def step(self):
-        self.datacollector.collect(self)
-        self.agents.do("step")
-        self.agents.do("advance")
-
-
-

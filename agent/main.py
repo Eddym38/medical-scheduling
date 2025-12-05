@@ -1,8 +1,8 @@
 """
 Point d'entrée pour lancer la simulation multi-agent.
 """
-from src.data.instances import competence_matrix
-from agent.model import SchedulingModel
+from data import competence_matrix
+from model import SchedulingModel
 import sys
 from pathlib import Path
 
@@ -30,7 +30,7 @@ def run_simulation(n_steps=100):
         n_tabu=1          # 1 agent Tabu
     )
 
-    print(f"Agents créés: {len(model.schedule.agents)}")
+    print(f"Agents créés: {len(model.my_agents)}")
     print(f"Étapes de simulation: {n_steps}")
     print()
 

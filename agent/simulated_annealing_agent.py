@@ -1,5 +1,7 @@
+from mesa import Agent
 import math
 import random
+
 
 def extraire_liste_operations(tableau_patients):
     operations = []
@@ -29,7 +31,6 @@ def generate_solution_voisine(tableau_patients, ordre_actuel):
             if verifier_precedence(nouvel_ordre):
                 return nouvel_ordre
     return ordre_actuel
-
 
 
 def decode_chromosome(chromosome, competence_matrix):
@@ -132,53 +133,47 @@ def calculate_makespan(solution):
     return len(solution[0])
 
 
-
 def algo_rs_step(best_order, makespan, competence_matrix, temperature, cooling_rate):
     """
     Une seule itération de l'algorithme de recuit simulé
-    
+
     Args:
         best_order: ordre actuel des opérations [[patient_id, op_id], ...]
         makespan: makespan actuel
         competence_matrix: matrice de compétences
         temperature: température actuelle
         cooling_rate: taux de refroidissement
-    
+
     Returns:
         tuple: (nouvel_ordre, nouveau_makespan, nouvelle_temperature)
     """
     # Génération d'une solution voisine
     ordre_prime = generate_solution_voisine(competence_matrix, best_order)
-    
+
     # Calcul du makespan de la nouvelle solution
     solution_prime = decode_chromosome(ordre_prime, competence_matrix)
     cmax_prime = calculate_makespan(solution_prime)
-    
+
     # Delta entre nouvelle et ancienne solution
     delta_f = cmax_prime - makespan
-    
+
     # Critère d'acceptation de Metropolis
     if delta_f < 0 or (temperature > 1e-8 and random.random() < math.exp(-delta_f / temperature)):
         # Solution acceptée
         best_order = ordre_prime
         makespan = cmax_prime
-    
+
     # Refroidissement
     temperature *= cooling_rate
-    
+
     return best_order, makespan, temperature
 
 
+class SimulatedAnnealingAgent(Agent):
 
-import math
-from mesa import Agent
-
-
-class RecuitSimuleAgent(Agent):
-    
     def simulated_annealing(self):
         """Algorithme de recuit simulé - une itération"""
-        
+
         # Appel à l'algorithme de recuit simulé (une seule itération)
         self.best_order, self.makespan, self.temperature = algo_rs_step(
             self.best_order,
@@ -187,38 +182,40 @@ class RecuitSimuleAgent(Agent):
             self.temperature,
             self.cooling_rate
         )
-    
+
     def __init__(self, model, collaboratif=False, temp_init=1000, cooling_rate=0.95):
         super().__init__(model)
-        
+
         # Initialiser l'ordre des opérations
-        self.best_order = extraire_liste_operations(self.model.competence_matrix)
-        
+        self.best_order = extraire_liste_operations(
+            self.model.competence_matrix)
+
         # Calculer le makespan initial
-        solution = decode_chromosome(self.best_order, self.model.competence_matrix)
+        solution = decode_chromosome(
+            self.best_order, self.model.competence_matrix)
         self.makespan = calculate_makespan(solution)
-        
+
         # Paramètres du recuit simulé
         self.temperature = temp_init
         self.temp_init = temp_init
         self.cooling_rate = cooling_rate
-        
+
         self.collaboratif = collaboratif
-    
+
     def contact(self):
         '''
         si je suis collaboratif, j'entre en contact avec les autres
         je vérifie s'il y a mieux que moi, dans ce cas, je recupere le meilleur dans ma population
         '''
         min_makespan = self.makespan
-        
+
         for a in self.model.agents:
             if a.makespan < min_makespan:
                 self.makespan = a.makespan
                 self.best_order = a.best_order.copy()
-    
+
     def step(self):
-        #print(f"I am n°{self.unique_id} and my makespan is : {self.makespan}")
+        # print(f"I am n°{self.unique_id} and my makespan is : {self.makespan}")
         self.simulated_annealing()
         if self.collaboratif == True:
             self.contact()

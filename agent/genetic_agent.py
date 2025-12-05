@@ -6,112 +6,6 @@ import math
 from mesa import Agent
 
 
-class GeneticAgent(Agent):
-
-    def __init__(self, model, inner_population_size=20, collaboratif=False, mutation_rate=0.2):
-        """Initialisation de l'agent génétique"""
-        super().__init__(model)
-
-        # Créer une population initiale interne
-        self.inner_population = create_initial_population(
-            inner_population_size,
-            self.model.competence_matrix
-        )
-
-        # Calculer les fitness et makespans de la population
-        self.fitness_values, self.makespans = evaluate_population(
-            self.inner_population,
-            self.model.competence_matrix
-        )
-
-        # Trouver le meilleur chromosome initial
-        best_index = min(range(len(self.inner_population)),
-                         key=lambda i: self.makespans[i])
-        self.best_order = [gene.copy()
-                           for gene in self.inner_population[best_index]]
-        self.makespan = self.makespans[best_index]
-
-        # Paramètres de l'algorithme génétique
-        self.population_size = inner_population_size
-        self.mutation_rate = mutation_rate
-        self.collaboratif = collaboratif
-
-    def genetic(self):
-        """Algorithme génétique - une seule génération"""
-
-        # Conserver le meilleur élément
-        new_population = [[gene.copy() for gene in self.best_order]]
-
-        # Générer le reste de la population par croisement et mutation
-        while len(new_population) < self.population_size:
-            parent1 = roulette_selection_with_fitness(
-                self.inner_population, self.fitness_values)
-            parent2 = roulette_selection_with_fitness(
-                self.inner_population, self.fitness_values)
-
-            child = LOX_chromosomes(parent1, parent2)
-            child = mutate_chromosome(child, self.mutation_rate)
-
-            new_population.append(child)
-
-        # Remplacer la population
-        self.inner_population = new_population
-
-        # Recalculer les fitness et makespans
-        self.fitness_values, self.makespans = evaluate_population(
-            self.inner_population,
-            self.model.competence_matrix
-        )
-
-        # Mettre à jour le meilleur
-        best_index = min(range(len(self.inner_population)),
-                         key=lambda i: self.makespans[i])
-        self.best_order = [gene.copy()
-                           for gene in self.inner_population[best_index]]
-        self.makespan = self.makespans[best_index]
-
-    def contact(self):
-        """Récupère la meilleure solution des autres agents et l'ajoute à la population"""
-
-        # Trouver la meilleure solution parmi tous les agents
-        best_external_agent = None
-        best_external_makespan = self.makespan
-
-        for a in self.model.agents:
-            if a != self and a.makespan < best_external_makespan:
-                best_external_makespan = a.makespan
-                best_external_agent = a
-
-        # Si on a trouvé une meilleure solution externe
-        if best_external_agent is not None:
-            # Trouver l'indice du pire élément de notre population
-            worst_index = max(range(len(self.inner_population)),
-                              key=lambda i: self.makespans[i])
-
-            # Remplacer le pire par la meilleure solution externe
-            self.inner_population[worst_index] = [
-                gene.copy() for gene in best_external_agent.best_order]
-
-            # Recalculer le makespan et fitness de cet élément
-            solution = decode_chromosome(
-                self.inner_population[worst_index], self.model.competence_matrix)
-            self.makespans[worst_index] = calculate_makespan(solution)
-            self.fitness_values[worst_index] = 1 / \
-                (1 + self.makespans[worst_index])
-
-            # Mettre à jour le meilleur si nécessaire
-            if best_external_makespan < self.makespan:
-                self.best_order = [gene.copy()
-                                   for gene in best_external_agent.best_order]
-                self.makespan = best_external_makespan
-
-    def step(self):
-        """Étape d'exécution de l'agent"""
-        self.genetic()
-        if self.collaboratif:
-            self.contact()
-
-
 def create_random_solution(competence_matrix):
     """
     Crée une solution aléatoire (liste d'opérations ordonnées).
@@ -409,3 +303,109 @@ def calculate_population_best_makespan(population, competence_matrix):
             best_makespan = ms
             best_chromosome = chrom
     return best_chromosome, best_makespan
+
+
+class GeneticAgent(Agent):
+
+    def __init__(self, model, inner_population_size=20, collaboratif=False, mutation_rate=0.2):
+        """Initialisation de l'agent génétique"""
+        super().__init__(model)
+
+        # Créer une population initiale interne
+        self.inner_population = create_initial_population(
+            inner_population_size,
+            self.model.competence_matrix
+        )
+
+        # Calculer les fitness et makespans de la population
+        self.fitness_values, self.makespans = evaluate_population(
+            self.inner_population,
+            self.model.competence_matrix
+        )
+
+        # Trouver le meilleur chromosome initial
+        best_index = min(range(len(self.inner_population)),
+                         key=lambda i: self.makespans[i])
+        self.best_order = [gene.copy()
+                           for gene in self.inner_population[best_index]]
+        self.makespan = self.makespans[best_index]
+
+        # Paramètres de l'algorithme génétique
+        self.population_size = inner_population_size
+        self.mutation_rate = mutation_rate
+        self.collaboratif = collaboratif
+
+    def genetic(self):
+        """Algorithme génétique - une seule génération"""
+
+        # Conserver le meilleur élément
+        new_population = [[gene.copy() for gene in self.best_order]]
+
+        # Générer le reste de la population par croisement et mutation
+        while len(new_population) < self.population_size:
+            parent1 = roulette_selection_with_fitness(
+                self.inner_population, self.fitness_values)
+            parent2 = roulette_selection_with_fitness(
+                self.inner_population, self.fitness_values)
+
+            child = LOX_chromosomes(parent1, parent2)
+            child = mutate_chromosome(child, self.mutation_rate)
+
+            new_population.append(child)
+
+        # Remplacer la population
+        self.inner_population = new_population
+
+        # Recalculer les fitness et makespans
+        self.fitness_values, self.makespans = evaluate_population(
+            self.inner_population,
+            self.model.competence_matrix
+        )
+
+        # Mettre à jour le meilleur
+        best_index = min(range(len(self.inner_population)),
+                         key=lambda i: self.makespans[i])
+        self.best_order = [gene.copy()
+                           for gene in self.inner_population[best_index]]
+        self.makespan = self.makespans[best_index]
+
+    def contact(self):
+        """Récupère la meilleure solution des autres agents et l'ajoute à la population"""
+
+        # Trouver la meilleure solution parmi tous les agents
+        best_external_agent = None
+        best_external_makespan = self.makespan
+
+        for a in self.model.agents:
+            if a != self and a.makespan < best_external_makespan:
+                best_external_makespan = a.makespan
+                best_external_agent = a
+
+        # Si on a trouvé une meilleure solution externe
+        if best_external_agent is not None:
+            # Trouver l'indice du pire élément de notre population
+            worst_index = max(range(len(self.inner_population)),
+                              key=lambda i: self.makespans[i])
+
+            # Remplacer le pire par la meilleure solution externe
+            self.inner_population[worst_index] = [
+                gene.copy() for gene in best_external_agent.best_order]
+
+            # Recalculer le makespan et fitness de cet élément
+            solution = decode_chromosome(
+                self.inner_population[worst_index], self.model.competence_matrix)
+            self.makespans[worst_index] = calculate_makespan(solution)
+            self.fitness_values[worst_index] = 1 / \
+                (1 + self.makespans[worst_index])
+
+            # Mettre à jour le meilleur si nécessaire
+            if best_external_makespan < self.makespan:
+                self.best_order = [gene.copy()
+                                   for gene in best_external_agent.best_order]
+                self.makespan = best_external_makespan
+
+    def step(self):
+        """Étape d'exécution de l'agent"""
+        self.genetic()
+        if self.collaboratif:
+            self.contact()
