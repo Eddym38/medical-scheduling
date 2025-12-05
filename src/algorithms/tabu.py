@@ -2,6 +2,8 @@ import numpy as np
 import random
 from typing import Dict, List, Tuple
 
+from src.utils.population import create_random_solution
+
 
 # ----------------------- Utilitaires de conversion -----------------------
 def normalize_competence_matrix(competence_matrix: List[List[List[int]]]) -> np.ndarray:
@@ -286,6 +288,75 @@ def schedule_to_ordered_operations(schedule: Dict[int, List[Tuple[str, int, int,
     return ordered_operations
 
 
+def operations_to_schedule(operations: List[List[int]], C: np.ndarray) -> Dict[int, List[Tuple[str, int, int, int]]]:
+    """
+    Convertit une liste d'opérations ordonnées en schedule Tabu (ordre initial simple).
+    Cette fonction permet d'utiliser une solution initiale sous forme de liste d'opérations.
+
+    Args:
+        operations: Liste d'opérations [[patient, op], ...]
+        C: Matrice de compétences normalisée
+
+    Returns:
+        Schedule au format Tabu Dict[skill, List[Tuple[task_id, p, o, k]]]
+    """
+    # Pour l'instant, on utilise juste build_tasks_by_comp qui crée un ordre initial
+    # Une amélioration future pourrait réorganiser selon l'ordre des opérations
+    return build_tasks_by_comp(C)
+
+
+def tabu_search_wrapper(competence_matrix,
+                        max_iter=250,
+                        tenure=7,
+                        candidate_size=40,
+                        seed=0,
+                        initial_solution=None,
+                        verbose=False,
+                        track_history=False,
+                        max_no_improve=50):
+    """
+    Wrapper de tabu_search qui accepte une matrice de compétences normale
+    et une solution initiale optionnelle, et retourne une liste d'opérations.
+
+    Args:
+        competence_matrix: Matrice de compétences (peut être irrégulière)
+        max_iter: Nombre maximum d'itérations
+        tenure: Durée tabu
+        candidate_size: Taille de la liste de candidats
+        seed: Graine aléatoire
+        initial_solution: Solution initiale optionnelle [[patient, op], ...]
+        verbose: Affichage des informations
+        track_history: Enregistrer l'historique
+        max_no_improve: Arrêt après N itérations sans amélioration
+
+    Returns:
+        Liste d'opérations ordonnées [[patient, op], ...]
+    """
+    # Normaliser la matrice
+    C_array = normalize_competence_matrix(competence_matrix)
+
+    # Si une solution initiale est fournie, la convertir en schedule
+    # (pour l'instant on l'ignore car le format interne de Tabu est différent)
+    # Une amélioration future pourrait l'utiliser
+
+    # Exécuter la recherche Tabu
+    best_schedule, best_cmax, iterations, history = tabu_search(
+        C_array,
+        max_iter=max_iter,
+        tenure=tenure,
+        candidate_size=candidate_size,
+        seed=seed,
+        verbose=verbose,
+        track_history=track_history,
+        max_no_improve=max_no_improve
+    )
+
+    # Convertir le schedule en liste d'opérations
+    ordered_operations = schedule_to_ordered_operations(best_schedule, C_array)
+
+    return ordered_operations
+
+
 def convert_schedule_to_planning(schedule: Dict[int, List[Tuple[str, int, int, int]]],
                                  C: np.ndarray):
     """
@@ -330,54 +401,37 @@ if __name__ == "__main__":
     from src.decoding.decoder import decode_chromosome
     from src.evaluation.fitness import calculate_makespan
 
-    # Paramètres
-    MAX_ITER = 600
-    TENURE = 7
-    CANDIDATE_SIZE = 50
-    SEED = 2
-    MAX_NO_IMPROVE = 80
-
     print("="*60)
     print("    ALGORITHME DE RECHERCHE TABU")
     print("="*60)
+    print()
 
-    # Conversion de la liste irrégulière en numpy array régulier
-    C_array = normalize_competence_matrix(competence_matrix)
-
-    print("\nDébut de l'algorithme de Recherche Tabu...\n")
-
-    # Exécution de l'algorithme
+    # Exécution de l'algorithme avec le wrapper
     import time
     start_time = time.time()
 
-    best_sched, best_cmax, iterations, history = tabu_search(
-        C_array,
-        max_iter=MAX_ITER,
-        tenure=TENURE,
-        candidate_size=CANDIDATE_SIZE,
-        seed=SEED,
+    best_operations = tabu_search_wrapper(
+        competence_matrix=competence_matrix,
+        max_iter=600,
+        tenure=7,
+        candidate_size=50,
+        seed=2,
         verbose=True,
-        track_history=True,
-        max_no_improve=MAX_NO_IMPROVE
+        max_no_improve=80
     )
 
     elapsed = time.time() - start_time
 
-    # Convertir le schedule en liste d'opérations ordonnées
-    ordered_operations = schedule_to_ordered_operations(best_sched, C_array)
+    # Décoder et afficher
+    best_solution = decode_chromosome(best_operations, competence_matrix)
+    best_makespan = calculate_makespan(best_solution)
 
-    # Utiliser le décodeur commun
-    solution_optimale = decode_chromosome(ordered_operations, C_array)
-    cmax_reel = calculate_makespan(solution_optimale)
-
-    # Résultats
-    print("\n" + "="*60)
-    print("    RÉSULTATS FINAUX")
+    print()
     print("="*60)
-    print(f"Makespan (CMax) : {cmax_reel}")
-    print(f"Temps d'exécution : {elapsed:.2f} secondes")
+    print("    RESULTATS FINAUX")
+    print("="*60)
+    print(f"Makespan (CMax) : {best_makespan}")
+    print(f"Temps d'execution : {elapsed:.2f} secondes")
 
     plot_planning(
-        solution_optimale,
-        title=f"Recherche Tabu (CMax = {cmax_reel})"
-    )
+        best_solution, title=f"Recherche Tabu (CMax = {best_makespan})")

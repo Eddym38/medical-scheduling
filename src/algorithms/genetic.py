@@ -2,29 +2,7 @@ import random
 
 from src.decoding.decoder import decode_chromosome
 from src.evaluation.fitness import calculate_makespan
-
-# ==========================
-#   DONNÉES
-# ==========================
-
-
-# ==========================
-#   CHROMOSOMES
-# ==========================
-
-def create_random_chromosome(competence_matrix):
-    """Chromosome = permutation de toutes les opérations (patient, op_idx)."""
-    chromosome = []
-    nb_patient = len(competence_matrix)
-    for p in range(nb_patient):
-        for op_idx in range(len(competence_matrix[p])):
-            chromosome.append([p, op_idx])
-    random.shuffle(chromosome)
-    return chromosome
-
-
-def create_initial_population(population_size, competence_matrix):
-    return [create_random_chromosome(competence_matrix) for _ in range(population_size)]
+from src.utils.population import create_initial_population, create_random_solution
 
 
 # ==========================
@@ -106,9 +84,31 @@ def genetic_algorithm(competence_matrix,
                       population_size=20,
                       generations=50,
                       mutation_rate=0.2,
+                      initial_solution=None,
                       verbose=True):
+    """
+    Algorithme génétique pour l'ordonnancement.
 
-    population = create_initial_population(population_size, competence_matrix)
+    Args:
+        competence_matrix: Matrice de compétences
+        population_size: Taille de la population
+        generations: Nombre de générations
+        mutation_rate: Taux de mutation
+        initial_solution: Solution initiale optionnelle [[patient, op], ...]
+        verbose: Affichage des informations
+
+    Returns:
+        Liste d'opérations ordonnées [[patient, op], ...]
+    """
+    # Créer la population initiale
+    if initial_solution is not None:
+        # Utiliser la solution initiale et générer le reste aléatoirement
+        population = [[gene.copy() for gene in initial_solution]]
+        population.extend(create_initial_population(
+            population_size - 1, competence_matrix))
+    else:
+        population = create_initial_population(
+            population_size, competence_matrix)
 
     fitness_values, makespans = evaluate_population(
         population, competence_matrix)
@@ -155,8 +155,7 @@ def genetic_algorithm(competence_matrix,
             print(
                 f"Génération {g:3d} | best makespan = {best_ms} | fitness = {best_fit:.6f}")
 
-    best_solution = decode_chromosome(best_chrom, competence_matrix)
-    return best_chrom, best_solution, best_ms, best_fit
+    return best_chrom
 
 
 # ==========================
@@ -167,20 +166,35 @@ def genetic_algorithm(competence_matrix,
 if __name__ == "__main__":
     from src.data.instances import competence_matrix
     from src.visualization.display import plot_planning
-    from src.utils.common import run_and_display
 
-    def wrapper_genetic(comp_matrix, **params):
-        """Wrapper pour adapter genetic_algorithm au format run_and_display."""
-        return genetic_algorithm(comp_matrix, **params)
+    print("="*60)
+    print(" "*15 + "ALGORITHME GENETIQUE")
+    print("="*60)
+    print()
 
-    run_and_display(
-        algorithm_name="Algorithme Génétique",
-        algorithm_func=wrapper_genetic,
+    import time
+    start_time = time.time()
+
+    best_operations = genetic_algorithm(
         competence_matrix=competence_matrix,
-        plot_func=plot_planning,
-        calculate_makespan_func=calculate_makespan,
         population_size=20,
         generations=50,
         mutation_rate=0.2,
         verbose=True
     )
+
+    elapsed = time.time() - start_time
+
+    # Décoder et afficher
+    best_solution = decode_chromosome(best_operations, competence_matrix)
+    best_makespan = calculate_makespan(best_solution)
+
+    print()
+    print("="*60)
+    print(" "*15 + "RESULTATS FINAUX")
+    print("="*60)
+    print(f"Makespan (CMax) : {best_makespan}")
+    print(f"Temps d'execution : {elapsed:.2f} secondes")
+
+    plot_planning(
+        best_solution, title=f"Algorithme Genetique (CMax = {best_makespan})")

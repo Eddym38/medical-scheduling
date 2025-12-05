@@ -3,15 +3,7 @@ import random
 
 from src.decoding.decoder import decode_chromosome
 from src.evaluation.fitness import calculate_makespan
-
-
-def extraire_liste_operations(tableau_patients):
-    operations = []
-    for patient in range(len(tableau_patients)):
-        for ope in range(len(tableau_patients[patient])):
-            if any(comp > 0 for comp in tableau_patients[patient][ope]):
-                operations.append([patient, ope])
-    return operations
+from src.utils.population import create_random_solution
 
 
 def verifier_precedence(ordre_operations):
@@ -35,18 +27,37 @@ def generate_solution_voisine(tableau_patients, ordre_actuel):
     return ordre_actuel
 
 
-def algo_rs(competence_matrix, t0=100, alpha=0.95, nbiter_cycle=30):
-    ordre = extraire_liste_operations(competence_matrix)
+def algo_rs(competence_matrix, t0=100, alpha=0.95, nbiter_cycle=30, initial_solution=None, verbose=True):
+    """
+    Algorithme de recuit simulé pour l'ordonnancement.
+
+    Args:
+        competence_matrix: Matrice de compétences
+        t0: Température initiale
+        alpha: Coefficient de refroidissement
+        nbiter_cycle: Nombre d'itérations par cycle
+        initial_solution: Solution initiale optionnelle [[patient, op], ...]
+        verbose: Affichage des informations
+
+    Returns:
+        Liste d'opérations ordonnées [[patient, op], ...]
+    """
+    if initial_solution is not None:
+        ordre = [op.copy() for op in initial_solution]
+    else:
+        ordre = create_random_solution(competence_matrix)
+
     ordre_star = ordre.copy()
-    
+
     solution = decode_chromosome(ordre, competence_matrix)
     cmax_star = calculate_makespan(solution)
 
     t = t0
     nouveau_cycle = True
 
-    print(f"Solution initiale Cmax : {cmax_star}")
-    print(f"Nombre d'opérations : {len(ordre)}\n")
+    if verbose:
+        print(f"Solution initiale Cmax : {cmax_star}")
+        print(f"Nombre d'opérations : {len(ordre)}\n")
 
     while nouveau_cycle:
         nbiter = 0
@@ -55,13 +66,13 @@ def algo_rs(competence_matrix, t0=100, alpha=0.95, nbiter_cycle=30):
         while nbiter < nbiter_cycle:
             nbiter += 1
             ordre_prime = generate_solution_voisine(competence_matrix, ordre)
-            
+
             solution_prime = decode_chromosome(ordre_prime, competence_matrix)
             cmax_prime = calculate_makespan(solution_prime)
-            
+
             solution = decode_chromosome(ordre, competence_matrix)
             cmax = calculate_makespan(solution)
-            
+
             delta_f = cmax_prime - cmax
 
             if delta_f < 0 or (t > 1e-8 and random.random() < math.exp(-delta_f / t)):
@@ -82,21 +93,35 @@ def algo_rs(competence_matrix, t0=100, alpha=0.95, nbiter_cycle=30):
 if __name__ == "__main__":
     from src.data.instances import competence_matrix
     from src.visualization.display import plot_planning
-    from src.utils.common import run_and_display
 
-    def wrapper_simulated_annealing(comp_matrix, **params):
-        ordre = algo_rs(comp_matrix, **params)
-        solution = decode_chromosome(ordre, comp_matrix)
-        cmax = calculate_makespan(solution)
-        return ordre, solution, cmax
+    print("="*60)
+    print(" "*15 + "RECUIT SIMULE")
+    print("="*60)
+    print()
 
-    run_and_display(
-        algorithm_name="Recuit Simulé",
-        algorithm_func=wrapper_simulated_annealing,
+    import time
+    start_time = time.time()
+
+    best_operations = algo_rs(
         competence_matrix=competence_matrix,
-        plot_func=plot_planning,
-        calculate_makespan_func=calculate_makespan,
         t0=100,
         alpha=0.95,
-        nbiter_cycle=30
+        nbiter_cycle=30,
+        verbose=True
     )
+
+    elapsed = time.time() - start_time
+
+    # Décoder et afficher
+    best_solution = decode_chromosome(best_operations, competence_matrix)
+    best_makespan = calculate_makespan(best_solution)
+
+    print()
+    print("="*60)
+    print(" "*15 + "RESULTATS FINAUX")
+    print("="*60)
+    print(f"Makespan (CMax) : {best_makespan}")
+    print(f"Temps d'execution : {elapsed:.2f} secondes")
+
+    plot_planning(
+        best_solution, title=f"Recuit Simule (CMax = {best_makespan})")
