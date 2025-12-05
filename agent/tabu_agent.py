@@ -1,8 +1,6 @@
 
 
 import random
-import numpy as np
-from typing import Dict, List, Tuple
 from mesa import Agent
 
 
@@ -105,261 +103,197 @@ def calculate_makespan(solution):
         return 0
     return len(solution[0])
 
-# ----------------------- Utilitaires de conversion -----------------------
 
-
-def normalize_competence_matrix(competence_matrix: List[List[List[int]]]) -> np.ndarray:
-    """Convertit une matrice de compétences irrégulière en tableau numpy régulier."""
-    num_patients = len(competence_matrix)
-    max_operations = max(len(patient_ops) for patient_ops in competence_matrix)
-    num_skills = len(competence_matrix[0][0])
-
-    normalized = np.zeros(
-        (num_patients, max_operations, num_skills), dtype=int)
-
-    for p in range(num_patients):
-        for o in range(len(competence_matrix[p])):
-            for s in range(num_skills):
-                normalized[p, o, s] = competence_matrix[p][o][s]
-
-    return normalized
-
-
-def build_tasks_by_comp(C: np.ndarray) -> Dict[int, List[Tuple[str, int, int, int]]]:
-    """Construit pour chaque compétence k la liste des tâches unitaires."""
-    P, O, K = C.shape
-    by_comp: Dict[int, List[Tuple[str, int, int, int]]] = {
-        k: [] for k in range(K)}
-    for p in range(P):
-        for o in range(O):
-            for k in range(K):
-                cnt = int(C[p, o, k])
-                for u in range(cnt):
-                    tid = f"p{p}_o{o}_k{k}_u{u}"
-                    by_comp[k].append((tid, p, o, k))
-    return by_comp
-
-
-def parse_tid(tid: str):
-    """Parse un task_id de format 'p{p}_o{o}_k{k}_u{u}'"""
-    parts = tid.split("_")
-    p = int(parts[0][1:])
-    o = int(parts[1][1:])
-    k = int(parts[2][1:])
-    u = int(parts[3][1:])
-    return p, o, k, u
-
-
-def evaluate_with_logs(schedule: Dict[int, List[Tuple[str, int, int, int]]], C: np.ndarray):
-    """Simule un planning et retourne (cmax, logs)."""
-    P, O, K = C.shape
-    queues = {k: lst[:] for k, lst in schedule.items()}
-    running: Dict[int, Tuple[str, int]] = {k: None for k in range(K)}
-    remaining = {(p, o): int(C[p, o].sum())
-                 for p in range(P) for o in range(O)}
-
-    next_op = {}
-    for p in range(P):
-        o = 0
-        while o < O and remaining[(p, o)] == 0:
-            o += 1
-        next_op[p] = o
-
-    logs = []
-    t = 0
-    total_tasks = sum(remaining.values())
-    done = 0
-
-    while done < total_tasks:
-        for k in range(K):
-            if running[k] is not None:
-                continue
-            q = queues[k]
-            chosen = None
-            for idx, (tid, p, o, _k) in enumerate(q):
-                if next_op[p] == o:
-                    chosen = idx
-                    break
-            if chosen is not None:
-                tid, p, o, _k = q[chosen]
-                del q[chosen]
-                running[k] = (tid, t + 1)
-                logs.append({"comp": k, "patient": p, "op": o,
-                             "task_id": tid, "start_tick": t, "end_tick": t + 1})
-
-        if all(r is None for r in running.values()):
-            raise RuntimeError("Blocage : aucune tâche en cours ni éligible.")
-
-        t += 1
-
-        for k in range(K):
-            r = running[k]
-            if r is None:
-                continue
-            tid, end_tick = r
-            if end_tick == t:
-                running[k] = None
-                p, o, _k, _u = parse_tid(tid)
-                remaining[(p, o)] -= 1
-                done += 1
-                if remaining[(p, o)] == 0 and next_op[p] == o:
-                    o2 = o + 1
-                    while o2 < O and remaining[(p, o2)] == 0:
-                        o2 += 1
-                    next_op[p] = o2
-
-    if not logs:
-        return 0, logs
-    cmax_reel = max(log["end_tick"] for log in logs)
-    return cmax_reel, logs
-
-
-def eval_cmax(schedule: Dict[int, List[Tuple[str, int, int, int]]], C: np.ndarray) -> int:
-    """Calcule uniquement le makespan."""
-    cmax, _ = evaluate_with_logs(schedule, C)
-    return cmax
-
-
-def apply_insertion(schedule: Dict[int, List[Tuple[str, int, int, int]]],
-                    k: int, i: int, j: int) -> Dict[int, List[Tuple[str, int, int, int]]]:
-    """Insère l'élément i à la position j dans la file de la compétence k."""
-    new = {kk: lst[:] for kk, lst in schedule.items()}
-    if len(new[k]) < 2 or i == j:
-        return new
-    i = max(0, min(i, len(new[k]) - 1))
-    j = max(0, min(j, len(new[k])))
-    elem = new[k].pop(i)
-    new[k].insert(j, elem)
-    return new
-
-
-def algo_tabu_step(current_schedule, best_schedule, best_val, tabu_dict,
-                   iteration, C_array, tenure=7, candidate_size=40):
+def create_random_chromosome(competence_matrix):
     """
-    Une seule itération de la recherche tabu.
+    Crée un chromosome aléatoire (liste d'opérations ordonnées).
 
     Args:
-        current_schedule: planning courant
-        best_schedule: meilleur planning trouvé
-        best_val: makespan du meilleur planning
-        tabu_dict: dictionnaire des mouvements tabu {(k, moved_id, j): iteration}
+        competence_matrix: Matrice de compétences [patient][operation][skill]
+
+    Returns:
+        Liste d'opérations [[patient, op_idx], ...] dans un ordre aléatoire
+    """
+    operations = []
+    nb_patients = len(competence_matrix)
+    for patient in range(nb_patients):
+        for op_idx in range(len(competence_matrix[patient])):
+            operations.append([patient, op_idx])
+    random.shuffle(operations)
+    return operations
+
+
+def apply_swap(chromosome, i, j):
+    """
+    Applique un swap entre deux positions dans le chromosome.
+
+    Args:
+        chromosome: Chromosome à modifier
+        i, j: Indices à échanger
+
+    Returns:
+        Nouveau chromosome avec les positions i et j échangées
+    """
+    new_chromosome = [gene[:] for gene in chromosome]
+    new_chromosome[i], new_chromosome[j] = new_chromosome[j], new_chromosome[i]
+    return new_chromosome
+
+
+def apply_insertion(chromosome, i, j):
+    """
+    Insère l'élément à la position i vers la position j.
+
+    Args:
+        chromosome: Chromosome à modifier
+        i: Position de l'élément à déplacer
+        j: Position de destination
+
+    Returns:
+        Nouveau chromosome avec l'élément déplacé
+    """
+    new_chromosome = [gene[:] for gene in chromosome]
+    if i == j or len(new_chromosome) < 2:
+        return new_chromosome
+
+    elem = new_chromosome.pop(i)
+    new_chromosome.insert(j, elem)
+    return new_chromosome
+
+
+def tabu_search_step(current_order, best_order, best_makespan, tabu_list,
+                     iteration, competence_matrix, tenure=7, candidate_size=40):
+    """
+    Une seule itération de la recherche tabu sur chromosomes.
+
+    Args:
+        current_order: chromosome courant (liste de [patient, op_idx])
+        best_order: meilleur chromosome trouvé
+        best_makespan: makespan du meilleur chromosome
+        tabu_list: liste des mouvements tabu [(i, j, iteration_expiration), ...]
         iteration: numéro d'itération actuel
-        C_array: matrice de compétences normalisée
+        competence_matrix: matrice de compétences
         tenure: durée tabu
         candidate_size: nombre de candidats à générer
 
     Returns:
-        tuple: (nouveau_current, nouveau_best, nouveau_best_val, nouveau_tabu_dict)
+        tuple: (nouveau_current, nouveau_best, nouveau_best_makespan, nouveau_tabu_list)
     """
-    P, O, K = C_array.shape
     candidates = []
 
-    # Générer des insertions aléatoires
+    # Générer des voisins par insertion
     for _ in range(candidate_size):
-        k = random.randrange(K)
-        if len(current_schedule[k]) < 2:
+        if len(current_order) < 2:
             continue
-        i = random.randrange(len(current_schedule[k]))
-        j = random.randrange(len(current_schedule[k]))
+
+        i = random.randrange(len(current_order))
+        j = random.randrange(len(current_order))
+
         if i == j:
             continue
 
-        moved_id = current_schedule[k][i][0]
-        attr = (k, moved_id, j)
-        cand = apply_insertion(current_schedule, k, i, j)
-        val = eval_cmax(cand, C_array)
-        candidates.append((val, cand, attr))
+        # Créer un voisin par insertion
+        neighbor = apply_insertion(current_order, i, j)
+
+        # Évaluer le voisin
+        solution = decode_chromosome(neighbor, competence_matrix)
+        makespan = calculate_makespan(solution)
+
+        candidates.append((makespan, neighbor, (i, j)))
 
     if not candidates:
-        return current_schedule, best_schedule, best_val, tabu_dict
+        return current_order, best_order, best_makespan, tabu_list
 
+    # Trier les candidats par makespan
     candidates.sort(key=lambda x: x[0])
+
+    # Nettoyer la liste tabu (retirer les mouvements expirés)
+    tabu_list = [(i, j, exp) for i, j, exp in tabu_list if exp > iteration]
 
     # Choisir le meilleur candidat non-tabu (ou avec aspiration)
     chosen = None
-    for val, cand, attr in candidates:
-        is_tabu = (attr in tabu_dict) and (tabu_dict[attr] > iteration)
-        if (not is_tabu) or (val < best_val):  # aspiration
-            chosen = (val, cand, attr)
+    for makespan, neighbor, (i, j) in candidates:
+        # Vérifier si le mouvement est tabu
+        is_tabu = any((i == ti and j == tj) for ti, tj, _ in tabu_list)
+
+        # Critère d'aspiration : accepter si meilleur que le best global
+        if (not is_tabu) or (makespan < best_makespan):
+            chosen = (makespan, neighbor, (i, j))
             break
 
     if chosen is None:
         chosen = candidates[0]
 
-    val, cand, attr = chosen
-    current_schedule = cand
-    tabu_dict[attr] = iteration + tenure
+    makespan, neighbor, (i, j) = chosen
+    current_order = neighbor
+    tabu_list.append((i, j, iteration + tenure))
 
     # Mise à jour du meilleur
-    if val < best_val:
-        best_schedule = cand
-        best_val = val
+    if makespan < best_makespan:
+        best_order = [gene[:] for gene in neighbor]
+        best_makespan = makespan
 
-    return current_schedule, best_schedule, best_val, tabu_dict
+    return current_order, best_order, best_makespan, tabu_list
 
 
 class TabuAgent(Agent):
-
-    def tabu_search_step(self):
-        """Recherche tabu - une itération"""
-
-        # Appel à l'algorithme tabu (une seule itération)
-        self.current_schedule, self.best_schedule, self.makespan, self.tabu_dict = algo_tabu_step(
-            self.current_schedule,
-            self.best_schedule,
-            self.makespan,
-            self.tabu_dict,
-            self.iteration,
-            self.C_array,
-            tenure=self.tenure,
-            candidate_size=self.candidate_size
-        )
-
-        self.iteration += 1
+    """Agent utilisant la recherche tabou sur chromosomes."""
 
     def __init__(self, model, collaboratif=False, tenure=7, candidate_size=40):
         super().__init__(model)
 
-        # Normaliser la matrice de compétences (format numpy pour tabu)
-        self.C_array = normalize_competence_matrix(
+        # Initialiser le chromosome courant et le meilleur
+        self.current_order = create_random_chromosome(
             self.model.competence_matrix)
-
-        # Initialiser le planning (tâches par compétence)
-        self.current_schedule = build_tasks_by_comp(self.C_array)
-        self.best_schedule = {k: lst[:]
-                              for k, lst in self.current_schedule.items()}
+        self.best_order = [gene[:] for gene in self.current_order]
 
         # Calculer le makespan initial
-        self.makespan = eval_cmax(self.best_schedule, self.C_array)
+        solution = decode_chromosome(
+            self.best_order, self.model.competence_matrix)
+        self.makespan = calculate_makespan(solution)
 
         # Paramètres de la recherche tabu
-        self.tabu_dict = {}
+        self.tabu_list = []  # Liste de tuples (i, j, iteration_expiration)
         self.iteration = 1
         self.tenure = tenure
         self.candidate_size = candidate_size
-
         self.collaboratif = collaboratif
+
+    def tabu_search_step(self):
+        """Recherche tabu - une itération"""
+        self.current_order, self.best_order, self.makespan, self.tabu_list = tabu_search_step(
+            self.current_order,
+            self.best_order,
+            self.makespan,
+            self.tabu_list,
+            self.iteration,
+            self.model.competence_matrix,
+            tenure=self.tenure,
+            candidate_size=self.candidate_size
+        )
+        self.iteration += 1
 
     def contact(self):
         """
-        Si collaboratif, récupère le meilleur planning parmi tous les agents
+        Si collaboratif, récupère le meilleur chromosome parmi tous les agents
         """
+        if not self.collaboratif:
+            return
+
         min_makespan = self.makespan
         best_agent = None
 
         for a in self.model.my_agents:
-            if hasattr(a, 'makespan') and a.makespan < min_makespan:
+            if hasattr(a, 'makespan') and hasattr(a, 'best_order') and a.makespan < min_makespan:
                 min_makespan = a.makespan
                 best_agent = a
 
         if best_agent is not None:
             self.makespan = best_agent.makespan
-            self.best_schedule = {k: lst[:]
-                                  for k, lst in best_agent.best_schedule.items()}
-            self.current_schedule = {
-                k: lst[:] for k, lst in best_agent.current_schedule.items()}
+            self.best_order = [gene[:] for gene in best_agent.best_order]
+            self.current_order = [gene[:] for gene in best_agent.best_order]
 
     def step(self):
+        """Exécute une étape de recherche tabou"""
         self.tabu_search_step()
         if self.collaboratif:
             self.contact()

@@ -1,0 +1,9 @@
+"""
+Module data - Données du projet d'ordonnancement.
+
+Ce module contient les données des patients et la matrice de compétences.
+"""
+
+from .patient_data import competence_matrix
+
+__all__ = ['competence_matrix']

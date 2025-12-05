@@ -13,7 +13,7 @@ from tabu_agent import TabuAgent
 class SchedulingModel(Model):
     """Modèle de simulation pour l'ordonnancement multi-agent."""
 
-    def __init__(self, competence_matrix, n_genetic=1, n_simulated=1, n_tabu=1):
+    def __init__(self, competence_matrix, n_genetic=1, n_simulated=1, n_tabu=1, collaboratif=False):
         """
         Initialise le modèle.
 
@@ -36,17 +36,17 @@ class SchedulingModel(Model):
         # Agents génétiques
         for i in range(n_genetic):
             agent = GeneticAgent(
-                model=self, inner_population_size=20, collaboratif=False, mutation_rate=0.2)
+                model=self, inner_population_size=20, collaboratif=collaboratif, mutation_rate=0.2)
             self.my_agents.append(agent)
 
         # Agents recuit simulé
         for i in range(n_simulated):
-            agent = SimulatedAnnealingAgent(self, collaboratif=False)
+            agent = SimulatedAnnealingAgent(self, collaboratif=collaboratif)
             self.my_agents.append(agent)
 
         # Agents Tabu
         for i in range(n_tabu):
-            agent = TabuAgent(self, collaboratif=False)
+            agent = TabuAgent(self, collaboratif=collaboratif)
             self.my_agents.append(agent)
 
         # Collecteur de données
@@ -61,6 +61,7 @@ class SchedulingModel(Model):
         # Exécuter manuellement chaque agent
         for agent in self.my_agents:
             agent.step()
+            self.update_global_best(agent.best_order, agent.makespan)
 
         # Collecter les données
         self.datacollector.collect(self)
