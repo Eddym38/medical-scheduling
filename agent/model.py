@@ -29,7 +29,9 @@ class SchedulingModel(Model):
         self.global_best_makespan = float('inf')
 
         # Créer les agents
-        from .agents import GeneticAgent, SimulatedAnnealingAgent, TabuAgent
+        from .genetic_agent import GeneticAgent
+        from .simulated_annealing_agent import SimulatedAnnealingAgent
+        from .tabu_agent import TabuAgent
 
         agent_id = 0
 

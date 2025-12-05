@@ -6,25 +6,43 @@ Structure du dossier `agent/` pour l'ordonnancement médical avec Mesa.
 
 ```
 agent/
-├── __init__.py          # Package initialization
-├── agents.py            # Définition des agents (GeneticAgent, SimulatedAnnealingAgent, TabuAgent)
-├── model.py             # Modèle Mesa (SchedulingModel)
-├── utils.py             # Fonctions utilitaires partagées
-├── main.py              # Point d'entrée pour lancer la simulation
-└── README.md            # Cette documentation
+├── __init__.py                      # Package initialization
+├── agents.py                        # Imports centralisés des agents
+├── genetic_agent.py                 # Agent algorithme génétique
+├── simulated_annealing_agent.py     # Agent recuit simulé
+├── tabu_agent.py                    # Agent recherche Tabu
+├── model.py                         # Modèle Mesa (SchedulingModel)
+├── utils.py                         # Fonctions utilitaires partagées
+├── main.py                          # Point d'entrée pour lancer la simulation
+└── README.md                        # Cette documentation
 ```
 
 ## Fichiers
 
+### `genetic_agent.py`
+
+Agent utilisant l'algorithme génétique.
+
+- Classe: `GeneticAgent`
+- **Binôme responsable:** [À remplir]
+
+### `simulated_annealing_agent.py`
+
+Agent utilisant le recuit simulé.
+
+- Classe: `SimulatedAnnealingAgent`
+- **Binôme responsable:** [À remplir]
+
+### `tabu_agent.py`
+
+Agent utilisant la recherche Tabu.
+
+- Classe: `TabuAgent`
+- **Binôme responsable:** [À remplir]
+
 ### `agents.py`
 
-Contient les classes d'agents :
-
-- `GeneticAgent` - Agent utilisant l'algorithme génétique
-- `SimulatedAnnealingAgent` - Agent utilisant le recuit simulé
-- `TabuAgent` - Agent utilisant la recherche Tabu
-
-Chaque agent hérite de `mesa.Agent` et implémente la méthode `step()`.
+Fichier d'imports centralisés pour faciliter l'utilisation des agents.
 
 ### `model.py`
 
@@ -78,8 +96,18 @@ print(f"Meilleur makespan: {model.global_best_makespan}")
 
 ## Extension
 
-Pour ajouter un nouvel agent :
+Pour travailler sur votre agent :
 
-1. Créer une classe dans `agents.py` qui hérite de `Agent`
-2. Implémenter la méthode `step()`
-3. L'ajouter dans `model.py` lors de l'initialisation
+1. **Ouvrez le fichier correspondant à votre agent** :
+
+   - `genetic_agent.py` pour l'algorithme génétique
+   - `simulated_annealing_agent.py` pour le recuit simulé
+   - `tabu_agent.py` pour la recherche Tabu
+
+2. **Implémentez la méthode `step()`** avec votre logique
+
+3. **Utilisez les utilitaires** dans `utils.py` pour évaluer vos solutions
+
+4. **Testez votre agent** en modifiant `main.py`
+
+Chaque binôme travaille sur son propre fichier d'agent sans conflit !
