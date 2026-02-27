@@ -111,3 +111,22 @@ Pour travailler sur votre agent :
 4. **Testez votre agent** en modifiant `main.py`
 
 Chaque binôme travaille sur son propre fichier d'agent sans conflit !
+
+## SMA Metier (Accueil / Identificateur / Ordonnanceur)
+
+Le notebook `systeme_multi_agents.ipynb` est maintenant porte en Python executable :
+
+- `sma.py` : structures de donnees, agents metier, sous-agents SA/Tabou/GA, coordinateur
+- `sma_main.py` : point d'entree CLI pour lancer un scenario complet
+
+Execution rapide :
+
+```bash
+python agent/sma_main.py --matrix competence_matrix_10.json --mode pipeline --steps-par-phase 50 --show-summary
+```
+
+Scenario avec absence de personnel :
+
+```bash
+python agent/sma_main.py --matrix competence_matrix_10.json --absence-id 2 --show-summary
+```

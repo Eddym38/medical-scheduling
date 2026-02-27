@@ -6,7 +6,7 @@ from matplotlib.colors import ListedColormap
 import matplotlib.patches as mpatches
 
 
-def plot_planning(solution, title="Planning", save_path=None):
+def plot_planning(solution, title="Planning", save_path=None, show=True):
     """
     Affiche le planning :
     - lignes = compétences (skills)
@@ -18,6 +18,7 @@ def plot_planning(solution, title="Planning", save_path=None):
         solution: Matrice [skill][time] avec (patient, op_idx) ou None
         title: Titre du graphique
         save_path: Chemin pour sauvegarder l'image (optionnel)
+        show: Affiche la fenetre matplotlib si True
     """
     if not solution or not solution[0]:
         print("Solution vide, rien à afficher.")
@@ -125,4 +126,7 @@ def plot_planning(solution, title="Planning", save_path=None):
         plt.savefig(save_path, dpi=300)
         print(f"Planning sauvegardé dans : {save_path}")
 
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
