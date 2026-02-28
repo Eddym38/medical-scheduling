@@ -215,11 +215,16 @@ def init_simulation(
     st.session_state.live_policy = "Chaque evenement"
     st.session_state.live_every_n = 3
     st.session_state.live_auto_reord = True
+    st.session_state.live_trigger_critical = True
     st.session_state.live_ord_mode = "pipeline"
     st.session_state.live_ord_steps = 120
     st.session_state.live_respect_timing = True
     st.session_state.live_speed = 4.0
     st.session_state.live_projection_enabled = True
+    st.session_state.live_next_tick_at = 0.0
+    st.session_state.live_patients_state = []
+    st.session_state.live_committed_plan = None
+    st.session_state.live_executed_timeline = [[] for _ in range(nb_competences)]
 
 
 def get_sma() -> CoordinateurSMA:
@@ -240,11 +245,16 @@ def ensure_runtime_state() -> None:
         "live_policy": "Chaque evenement",
         "live_every_n": 3,
         "live_auto_reord": True,
+        "live_trigger_critical": True,
         "live_ord_mode": "pipeline",
         "live_ord_steps": 120,
         "live_respect_timing": True,
         "live_speed": 4.0,
         "live_projection_enabled": True,
+        "live_next_tick_at": 0.0,
+        "live_patients_state": [],
+        "live_committed_plan": None,
+        "live_executed_timeline": [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -527,7 +537,17 @@ def build_generated_scenario(
         urgence = None
         if urgency_mode == "Fixe":
             urgence = Urgence[fixed_urgency]
-        sma.simuler_arrivee_patient(operations=operations, urgence=urgence, nom=f"Patient_{idx:03d}")
+        patient_obj = sma.simuler_arrivee_patient(
+            operations=operations,
+            urgence=urgence,
+            nom=f"Patient_{idx:03d}",
+        )
+        _ensure_live_patient_state_from_event(
+            nom=patient_obj.nom,
+            urgence_name=patient_obj.urgence.name,
+            operations=operations,
+            arrivee=float(t_arrivee),
+        )
 
     events = []
     if simulate_absences:
@@ -691,20 +711,41 @@ def compute_live_projection(
     Calcule un planning "what-if" a partir des patients en attente,
     sans modifier l'etat accueil/en_cours.
     """
-    matrix = sma.accueil.construire_matrice_competences()
+    _advance_live_progress_to(sma.timestamp)
+    matrix, active = build_live_remaining_matrix()
     if not matrix:
         return None
 
-    projection = AgentOrdonnanceur(
-        nom="ProjectionLive",
-        steps_par_phase=sma.ordonnanceur.steps_par_phase,
-    )
-    return projection.ordonnancer(
+    projection = AgentOrdonnanceur(nom="ProjectionLive", steps_par_phase=sma.ordonnanceur.steps_par_phase)
+    result = projection.ordonnancer(
         competence_matrix=matrix,
         mode=mode,
         n_steps=n_steps,
         verbose=False,
     )
+
+    planning_local = result.get("planning", [])
+    planning_global: List[List[Any]] = []
+    for row in planning_local:
+        new_row = []
+        for slot in row:
+            if slot is None:
+                new_row.append(None)
+                continue
+            local_idx, local_op = slot
+            patient_state = active[int(local_idx)]
+            pid = int(patient_state["pid"])
+            global_op = int(patient_state["completed_ops"]) + int(local_op)
+            new_row.append((pid, global_op))
+        planning_global.append(new_row)
+
+    return {
+        "makespan": result.get("makespan"),
+        "planning": planning_global,
+        "solution": result.get("solution"),
+        "duree_calcul": result.get("duree_calcul"),
+        "historique": result.get("historique"),
+    }
 
 
 def compute_global_preview_from_timeline(
@@ -745,11 +786,291 @@ def count_patients_in_planning(solution: List[List[Any]]) -> int:
     return len(patient_set)
 
 
+def _ensure_live_patient_state_from_event(
+    *,
+    nom: str,
+    urgence_name: str,
+    operations: List[List[int]],
+    arrivee: float,
+) -> None:
+    states: List[Dict[str, Any]] = st.session_state.get("live_patients_state", [])
+    if any(s.get("nom") == nom for s in states):
+        return
+
+    urgence = Urgence[urgence_name]
+    states.append(
+        {
+            "pid": len(states),
+            "nom": nom,
+            "urgence_name": urgence.name,
+            "urgence_level": urgence.value,
+            "arrivee": float(arrivee),
+            "operations": operations,
+            "completed_ops": 0,
+        }
+    )
+    st.session_state.live_patients_state = states
+
+
+def _extract_op_end_times_global(planning: List[List[Any]]) -> Dict[tuple[int, int], int]:
+    op_end: Dict[tuple[int, int], int] = {}
+    for row in planning or []:
+        for t, slot in enumerate(row):
+            if slot is None:
+                continue
+            pid, op_idx = slot
+            key = (int(pid), int(op_idx))
+            op_end[key] = max(op_end.get(key, 0), t + 1)
+    return op_end
+
+
+def _ensure_executed_timeline_shape(nb_rows: int) -> List[List[Any]]:
+    timeline = st.session_state.get("live_executed_timeline")
+    if not isinstance(timeline, list):
+        timeline = []
+    while len(timeline) < nb_rows:
+        timeline.append([])
+    for idx, row in enumerate(timeline):
+        if not isinstance(row, list):
+            timeline[idx] = []
+    st.session_state.live_executed_timeline = timeline
+    return timeline
+
+
+def _materialize_plan_progress(timestamp: float) -> None:
+    """Ajoute a la timeline executee la partie du plan deja consommee par le temps."""
+    plan = st.session_state.get("live_committed_plan")
+    if not isinstance(plan, dict):
+        return
+
+    planning = plan.get("planning", [])
+    if not isinstance(planning, list) or not planning:
+        return
+
+    start_t = float(plan.get("start_t", 0.0))
+    elapsed = max(0, int(float(timestamp) - start_t))
+    horizon = max((len(r) for r in planning), default=0)
+    if horizon <= 0:
+        return
+
+    target = min(elapsed, horizon)
+    applied = int(plan.get("applied_ticks", 0))
+    if target <= applied:
+        return
+
+    nb_rows = max(len(planning), int(get_sma().nb_competences))
+    timeline = _ensure_executed_timeline_shape(nb_rows)
+
+    for row_idx in range(nb_rows):
+        src = planning[row_idx] if row_idx < len(planning) else []
+        dst = timeline[row_idx]
+        for t in range(applied, target):
+            dst.append(src[t] if t < len(src) else None)
+
+    plan["applied_ticks"] = target
+    st.session_state.live_executed_timeline = timeline
+    st.session_state.live_committed_plan = plan
+
+
+def _advance_live_progress_to(timestamp: float) -> None:
+    plan = st.session_state.get("live_committed_plan")
+    if not isinstance(plan, dict):
+        return
+
+    _materialize_plan_progress(timestamp)
+
+    start_t = float(plan.get("start_t", 0.0))
+    elapsed = max(0, int(float(timestamp) - start_t))
+    op_end: Dict[tuple[int, int], int] = plan.get("op_end_times", {})
+    states: List[Dict[str, Any]] = st.session_state.get("live_patients_state", [])
+
+    for state in states:
+        pid = int(state.get("pid", -1))
+        completed = int(state.get("completed_ops", 0))
+        total_ops = len(state.get("operations", []))
+        while completed < total_ops:
+            end_tick = op_end.get((pid, completed))
+            if end_tick is None or end_tick > elapsed:
+                break
+            completed += 1
+        state["completed_ops"] = completed
+
+    st.session_state.live_patients_state = states
+
+
+def get_live_remaining_patients() -> List[Dict[str, Any]]:
+    sma = get_sma()
+    now_t = float(sma.timestamp)
+    states: List[Dict[str, Any]] = st.session_state.get("live_patients_state", [])
+    active = []
+    for s in states:
+        if float(s.get("arrivee", 0.0)) <= now_t and int(s.get("completed_ops", 0)) < len(
+            s.get("operations", [])
+        ):
+            active.append(s)
+    return active
+
+
+def build_live_remaining_matrix() -> tuple[List[List[List[int]]], List[Dict[str, Any]]]:
+    active = get_live_remaining_patients()
+    active.sort(key=lambda s: (s["urgence_level"], s["arrivee"], s["pid"]))
+
+    matrix: List[List[List[int]]] = []
+    for s in active:
+        completed = int(s.get("completed_ops", 0))
+        matrix.append(s.get("operations", [])[completed:])
+    return matrix, active
+
+
+def schedule_live_progress(
+    *,
+    timestamp: float,
+    mode: str,
+    n_steps: int,
+    steps_par_phase: int,
+) -> Optional[Dict[str, Any]]:
+    _advance_live_progress_to(timestamp)
+    matrix, active = build_live_remaining_matrix()
+    if not matrix:
+        return None
+
+    ord_agent = AgentOrdonnanceur(nom="LiveProgress", steps_par_phase=steps_par_phase)
+    result = ord_agent.ordonnancer(
+        competence_matrix=matrix,
+        mode=mode,
+        n_steps=n_steps,
+        verbose=False,
+    )
+
+    planning_local = result.get("planning", [])
+    planning_global: List[List[Any]] = []
+    for row in planning_local:
+        new_row = []
+        for slot in row:
+            if slot is None:
+                new_row.append(None)
+                continue
+            local_idx, local_op = slot
+            patient_state = active[int(local_idx)]
+            pid = int(patient_state["pid"])
+            global_op = int(patient_state["completed_ops"]) + int(local_op)
+            new_row.append((pid, global_op))
+        planning_global.append(new_row)
+
+    op_end_times = _extract_op_end_times_global(planning_global)
+    st.session_state.live_committed_plan = {
+        "start_t": float(timestamp),
+        "planning": planning_global,
+        "op_end_times": op_end_times,
+        "makespan": result.get("makespan"),
+        "applied_ticks": 0,
+    }
+
+    result_global = {
+        "makespan": result.get("makespan"),
+        "planning": planning_global,
+        "solution": result.get("solution"),
+        "duree_calcul": result.get("duree_calcul"),
+        "historique": result.get("historique"),
+    }
+    st.session_state.last_result = result_global
+    return result_global
+
+
+def get_live_queue_df() -> pd.DataFrame:
+    active = get_live_remaining_patients()
+    rows = []
+    for s in active:
+        total_ops = len(s.get("operations", []))
+        done = int(s.get("completed_ops", 0))
+        rows.append(
+            {
+                "pid": s.get("pid"),
+                "nom": s.get("nom"),
+                "urgence": s.get("urgence_name"),
+                "arrivee": round(float(s.get("arrivee", 0.0)), 2),
+                "ops_terminees": done,
+                "ops_restantes": max(0, total_ops - done),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _copy_planning(planning: List[List[Any]]) -> List[List[Any]]:
+    return [list(row) for row in planning or []]
+
+
+def _concat_plannings(left: List[List[Any]], right: List[List[Any]]) -> List[List[Any]]:
+    nb_rows = max(len(left), len(right))
+    merged: List[List[Any]] = []
+    for row_idx in range(nb_rows):
+        l_row = list(left[row_idx]) if row_idx < len(left) else []
+        r_row = list(right[row_idx]) if row_idx < len(right) else []
+        merged.append(l_row + r_row)
+    return merged
+
+
+def build_live_graph_result(
+    *,
+    sma: CoordinateurSMA,
+    mode: str,
+    n_steps: int,
+    projection_enabled: bool,
+) -> Optional[Dict[str, Any]]:
+    """
+    Construit un graphe evolutif:
+    - prefixe: partie deja executee
+    - suffixe: projection (ou reste du plan valide en cours)
+    """
+    _advance_live_progress_to(float(sma.timestamp))
+
+    executed = _copy_planning(st.session_state.get("live_executed_timeline", []))
+    future: List[List[Any]] = []
+    title = "Live evolutif"
+
+    if projection_enabled:
+        projection = compute_live_projection(
+            sma=sma,
+            mode=mode,
+            n_steps=n_steps,
+        )
+        if isinstance(projection, dict):
+            future = _copy_planning(projection.get("planning", []))
+            title = f"Live evolutif (fait + projection) - CMax {projection.get('makespan', '?')}"
+
+    if not future:
+        plan = st.session_state.get("live_committed_plan")
+        if isinstance(plan, dict):
+            planning = plan.get("planning", [])
+            if isinstance(planning, list) and planning:
+                horizon = max((len(r) for r in planning), default=0)
+                start_idx = min(int(plan.get("applied_ticks", 0)), horizon)
+                future = []
+                for row in planning:
+                    if start_idx < len(row):
+                        future.append(list(row[start_idx:]))
+                    else:
+                        future.append([])
+                title = f"Live evolutif (fait + plan valide)"
+
+    merged = _concat_plannings(executed, future)
+    horizon = max((len(r) for r in merged), default=0)
+    if horizon <= 0:
+        return None
+
+    return {
+        "planning": merged,
+        "makespan": horizon,
+        "title": title,
+    }
+
+
 def process_next_live_event(
     *,
     scheduling_policy: str,
     schedule_every_n: int,
     auto_reord_on_absence: bool,
+    critical_trigger: bool,
     ord_mode: str,
     ord_steps: int,
 ) -> Optional[Dict[str, Any]]:
@@ -763,6 +1084,7 @@ def process_next_live_event(
     event = events[index]
     st.session_state.live_index = index + 1
     sma.timestamp = float(event["timestamp"])
+    _advance_live_progress_to(sma.timestamp)
 
     event_log: Dict[str, Any] = {
         "timestamp": event["timestamp"],
@@ -777,13 +1099,19 @@ def process_next_live_event(
         payload = event["payload"]
         urgence_name = payload.get("urgence")
         urgence = Urgence[urgence_name] if urgence_name else None
-        sma.simuler_arrivee_patient(
+        patient_obj = sma.simuler_arrivee_patient(
             operations=payload["operations"],
             urgence=urgence,
             nom=payload.get("nom"),
         )
+        _ensure_live_patient_state_from_event(
+            nom=payload.get("nom", f"Patient_{index+1:03d}"),
+            urgence_name=patient_obj.urgence.name,
+            operations=payload["operations"],
+            arrivee=float(event["timestamp"]),
+        )
         st.session_state.live_arrivals_since_schedule += 1
-        event_log["details"] = payload.get("nom", "patient")
+        event_log["details"] = f"{payload.get('nom', 'patient')} ({patient_obj.urgence.name})"
 
         should_schedule = False
         if scheduling_policy == "Chaque evenement":
@@ -791,9 +1119,17 @@ def process_next_live_event(
         elif scheduling_policy == "Toutes les N arrivees":
             if st.session_state.live_arrivals_since_schedule >= max(1, schedule_every_n):
                 should_schedule = True
+        if critical_trigger and patient_obj.urgence == Urgence.CRITIQUE:
+            should_schedule = True
+            event_log["details"] += " [TRIGGER CRITIQUE]"
 
         if should_schedule:
-            result = _schedule_now_if_needed(sma=sma, mode=ord_mode, n_steps=ord_steps)
+            result = schedule_live_progress(
+                timestamp=sma.timestamp,
+                mode=ord_mode,
+                n_steps=ord_steps,
+                steps_par_phase=sma.ordonnanceur.steps_par_phase,
+            )
             st.session_state.live_arrivals_since_schedule = 0
             if result is not None:
                 event_log["scheduled"] = True
@@ -811,7 +1147,12 @@ def process_next_live_event(
                     item["impact_critique"] = bool(msg.contenu.get("impact_critique"))
                     break
             if auto_reord_on_absence:
-                result = _schedule_now_if_needed(sma=sma, mode=ord_mode, n_steps=ord_steps)
+                result = schedule_live_progress(
+                    timestamp=sma.timestamp,
+                    mode=ord_mode,
+                    n_steps=ord_steps,
+                    steps_par_phase=sma.ordonnanceur.steps_par_phase,
+                )
                 if result is not None:
                     event_log["scheduled"] = True
                     event_log["cmax"] = result["makespan"]
@@ -835,6 +1176,7 @@ def run_live_until_end(
     scheduling_policy: str,
     schedule_every_n: int,
     auto_reord_on_absence: bool,
+    critical_trigger: bool,
     ord_mode: str,
     ord_steps: int,
 ) -> Optional[Dict[str, Any]]:
@@ -847,13 +1189,20 @@ def run_live_until_end(
             scheduling_policy=scheduling_policy,
             schedule_every_n=schedule_every_n,
             auto_reord_on_absence=auto_reord_on_absence,
+            critical_trigger=critical_trigger,
             ord_mode=ord_mode,
             ord_steps=ord_steps,
         )
         safety += 1
 
     # Garantit un resultat final exploitable meme en politique "Manuel"
-    result = _schedule_now_if_needed(sma=get_sma(), mode=ord_mode, n_steps=ord_steps)
+    sma = get_sma()
+    result = schedule_live_progress(
+        timestamp=sma.timestamp,
+        mode=ord_mode,
+        n_steps=ord_steps,
+        steps_par_phase=sma.ordonnanceur.steps_par_phase,
+    )
     if result is not None:
         st.session_state.live_processed.append(
             {
@@ -865,6 +1214,53 @@ def run_live_until_end(
             }
         )
     return st.session_state.get("last_result")
+
+
+@st.fragment(run_every=0.12)
+def live_autoplay_fragment() -> None:
+    """Tick autoplay sans recharger la page navigateur."""
+    if not st.session_state.get("live_play", False):
+        return
+
+    events = st.session_state.get("live_events", [])
+    index = int(st.session_state.get("live_index", 0))
+    if index >= len(events):
+        st.session_state.live_play = False
+        return
+
+    now = time.time()
+    next_due = float(st.session_state.get("live_next_tick_at", 0.0))
+    if now < next_due:
+        return
+
+    current_t = float(events[index]["timestamp"])
+
+    process_next_live_event(
+        scheduling_policy=str(st.session_state.get("live_policy", "Chaque evenement")),
+        schedule_every_n=int(st.session_state.get("live_every_n", 3)),
+        auto_reord_on_absence=bool(st.session_state.get("live_auto_reord", True)),
+        critical_trigger=bool(st.session_state.get("live_trigger_critical", True)),
+        ord_mode=str(st.session_state.get("live_ord_mode", "pipeline")),
+        ord_steps=int(st.session_state.get("live_ord_steps", 120)),
+    )
+
+    events = st.session_state.get("live_events", [])
+    new_index = int(st.session_state.get("live_index", 0))
+    if new_index >= len(events):
+        st.session_state.live_play = False
+        return
+
+    respect_timing = bool(st.session_state.get("live_respect_timing", True))
+    speed = max(0.5, float(st.session_state.get("live_speed", 4.0)))
+    if respect_timing:
+        next_t = float(events[new_index]["timestamp"])
+        dt_sim = max(0.0, next_t - current_t)
+        delay = max(0.08, min(2.0, dt_sim / speed))
+    else:
+        delay = max(0.08, min(1.0, 0.35 / speed))
+
+    st.session_state.live_next_tick_at = now + delay
+    st.rerun(scope="app")
 
 
 def main() -> None:
@@ -937,6 +1333,7 @@ def main() -> None:
         )
         gen_every_n = st.number_input("N arrivees", min_value=1, max_value=50, value=3)
         gen_auto_reord = st.checkbox("Auto re-ordonnancement sur absence", value=True)
+        gen_trigger_critical = st.checkbox("Ordonnancer immediatement si CRITIQUE", value=True)
         gen_ord_mode = st.selectbox("Mode ordonnancement", ["pipeline", "parallele"], index=0)
         gen_ord_steps = st.number_input(
             "Iterations ordonnancement",
@@ -982,6 +1379,7 @@ def main() -> None:
             st.session_state.live_policy = gen_policy
             st.session_state.live_every_n = int(gen_every_n)
             st.session_state.live_auto_reord = bool(gen_auto_reord)
+            st.session_state.live_trigger_critical = bool(gen_trigger_critical)
             st.session_state.live_ord_mode = gen_ord_mode
             st.session_state.live_ord_steps = int(gen_ord_steps)
 
@@ -995,6 +1393,7 @@ def main() -> None:
                 scheduling_policy=gen_policy,
                 schedule_every_n=int(gen_every_n),
                 auto_reord_on_absence=gen_auto_reord,
+                critical_trigger=gen_trigger_critical,
                 ord_mode=gen_ord_mode,
                 ord_steps=int(gen_ord_steps),
             )
@@ -1035,10 +1434,16 @@ def main() -> None:
             st.success("Simulation reinitialisee.")
 
     sma = get_sma()
+    live_queue_count = len(get_live_remaining_patients())
+    completed_patients = sum(
+        1
+        for s in st.session_state.get("live_patients_state", [])
+        if int(s.get("completed_ops", 0)) >= len(s.get("operations", []))
+    )
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Patients en attente", len(sma.accueil.patients_en_attente))
-    m2.metric("Patients en cours", len(sma.accueil.patients_en_cours))
+    m1.metric("Patients en attente", live_queue_count)
+    m2.metric("Patients termines", completed_patients)
     m3.metric(
         "Personnel disponible",
         sum(1 for p in sma.identificateur.registre_personnel if p.statut == StatutPersonnel.DISPONIBLE),
@@ -1125,7 +1530,7 @@ def main() -> None:
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.subheader("File d'attente")
             st.caption("Patients non encore integres dans un planning valide.")
-            st.dataframe(patients_to_df(sma.accueil.patients_en_attente), use_container_width=True, hide_index=True)
+            st.dataframe(get_live_queue_df(), use_container_width=True, hide_index=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
         with right:
@@ -1155,7 +1560,7 @@ def main() -> None:
         p3.metric("Restants", remaining)
         next_t = events[live_index]["timestamp"] if live_index < len(events) else "-"
         p4.metric("Prochain t", next_t)
-        p5.metric("File attente", len(sma.accueil.patients_en_attente))
+        p5.metric("File attente", len(get_live_remaining_patients()))
 
         with st.expander("Parametres live", expanded=False):
             scheduling_policy = st.selectbox(
@@ -1172,6 +1577,10 @@ def main() -> None:
             auto_reord_on_absence = st.checkbox(
                 "Re-ordonnancer automatiquement sur absence",
                 key="live_auto_reord",
+            )
+            trigger_critical = st.checkbox(
+                "Ordonnancer immediatement si CRITIQUE",
+                key="live_trigger_critical",
             )
             ord_mode_live = st.selectbox(
                 "Mode ordonnancement auto",
@@ -1201,6 +1610,10 @@ def main() -> None:
                 key="live_speed",
             )
 
+        events = st.session_state.get("live_events", [])
+        live_index = int(st.session_state.get("live_index", 0))
+        remaining = max(0, len(events) - live_index)
+
         bar1, bar2, bar3, bar4, bar5 = st.columns(5)
         with bar1:
             if st.button("Avancer +1", disabled=remaining == 0):
@@ -1208,6 +1621,7 @@ def main() -> None:
                     scheduling_policy=scheduling_policy,
                     schedule_every_n=int(schedule_every_n),
                     auto_reord_on_absence=auto_reord_on_absence,
+                    critical_trigger=trigger_critical,
                     ord_mode=ord_mode_live,
                     ord_steps=int(ord_steps_live),
                 )
@@ -1215,6 +1629,7 @@ def main() -> None:
         with bar2:
             if st.button("Auto-play", disabled=remaining == 0):
                 st.session_state.live_play = True
+                st.session_state.live_next_tick_at = 0.0
                 st.rerun()
         with bar3:
             if st.button("Stop"):
@@ -1225,6 +1640,7 @@ def main() -> None:
                     scheduling_policy=scheduling_policy,
                     schedule_every_n=int(schedule_every_n),
                     auto_reord_on_absence=auto_reord_on_absence,
+                    critical_trigger=trigger_critical,
                     ord_mode=ord_mode_live,
                     ord_steps=int(ord_steps_live),
                 )
@@ -1232,74 +1648,43 @@ def main() -> None:
                 st.rerun()
         with bar5:
             if st.button("Ordonnancer maintenant"):
-                result = _schedule_now_if_needed(
-                    sma=sma,
+                result = schedule_live_progress(
+                    timestamp=sma.timestamp,
                     mode=ord_mode_live,
                     n_steps=int(ord_steps_live),
+                    steps_par_phase=sma.ordonnanceur.steps_par_phase,
                 )
                 if result is not None:
                     st.success(f"Ordonnancement lance. CMax={result['makespan']}")
                 else:
                     st.info("Aucun patient en attente.")
 
-        if st.session_state.get("live_play", False) and remaining > 0:
-            current_t = events[live_index]["timestamp"] if live_index < len(events) else None
-            process_next_live_event(
-                scheduling_policy=scheduling_policy,
-                schedule_every_n=int(schedule_every_n),
-                auto_reord_on_absence=auto_reord_on_absence,
-                ord_mode=ord_mode_live,
-                ord_steps=int(ord_steps_live),
-            )
-            new_index = int(st.session_state.get("live_index", 0))
-            if respect_timing and current_t is not None and new_index < len(events):
-                next_t = events[new_index]["timestamp"]
-                dt_sim = max(0.0, float(next_t) - float(current_t))
-                delay = max(0.06, min(2.0, dt_sim / max(0.5, float(speed_factor))))
-            else:
-                delay = max(0.06, min(1.0, 0.35 / max(0.5, float(speed_factor))))
-            time.sleep(delay)
-            st.rerun()
-
         st.markdown("**Graphe live**")
-        graph_result = None
-        graph_title = ""
-        live_result = st.session_state.get("last_result")
-        if projection_enabled:
-            proj = compute_live_projection(
-                sma=sma,
-                mode=ord_mode_live,
-                n_steps=int(ord_steps_live),
+        live_graph = build_live_graph_result(
+            sma=sma,
+            mode=ord_mode_live,
+            n_steps=int(ord_steps_live),
+            projection_enabled=bool(projection_enabled),
+        )
+        if isinstance(live_graph, dict):
+            fig_live = planning_figure(
+                live_graph.get("planning", []),
+                title=str(live_graph.get("title", "Live evolutif")),
             )
-            if isinstance(proj, dict):
-                graph_result = proj
-                graph_title = f"Projection live - CMax {proj.get('makespan', '?')}"
-        if graph_result is None and isinstance(live_result, dict):
-            graph_result = live_result
-            graph_title = f"Planning valide - CMax {live_result.get('makespan', '?')}"
-        if graph_result is None:
-            preview_result = st.session_state.get("scenario_preview", {}).get("result_global")
-            if isinstance(preview_result, dict):
-                graph_result = preview_result
-                graph_title = f"Preview global - CMax {preview_result.get('makespan', '?')}"
-
-        if isinstance(graph_result, dict):
-            fig_live = planning_figure(graph_result.get("planning", []), title=graph_title)
             if fig_live is not None:
                 st.pyplot(fig_live, use_container_width=True)
             else:
                 st.caption("Aucun graphe disponible.")
         else:
-            st.caption("Aucun graphe disponible pour le moment.")
+            st.caption(
+                "Aucun graphe live pour l'instant (attendre une arrivee, ou activer la projection)."
+            )
 
         tables_cols = st.columns([1, 1])
         with tables_cols[0]:
             st.markdown("**File d'attente (evolution live)**")
-            st.dataframe(
-                patients_to_df(sma.accueil.patients_en_attente),
-                use_container_width=True,
-                hide_index=True,
-            )
+            queue_df = get_live_queue_df()
+            st.dataframe(queue_df, use_container_width=True, hide_index=True)
 
         with tables_cols[1]:
             st.markdown("**Evenements traites**")
@@ -1308,6 +1693,9 @@ def main() -> None:
                 st.dataframe(pd.DataFrame(processed[-30:]), use_container_width=True, hide_index=True)
             else:
                 st.caption("Aucun evenement traite pour le moment.")
+
+        # Tick autoplay en fin d'ecran pour laisser le rendu se faire avant la prochaine etape.
+        live_autoplay_fragment()
 
     with tab_patients:
         st.subheader("Ajouter un patient manuellement")
@@ -1344,10 +1732,21 @@ def main() -> None:
                         max_ops=max_ops,
                         max_skills_per_op=max_comp,
                         max_duration=max_dur,
-                    )
+                )
                 urgence_obj = None if urgence_pick == "AUTO" else Urgence[urgence_pick]
                 sma.timestamp += random.uniform(0.2, 2.0)
-                sma.simuler_arrivee_patient(operations=operations, urgence=urgence_obj, nom=nom_patient or None)
+                manual_name = nom_patient or f"Patient_{len(st.session_state.get('live_patients_state', [])) + 1:03d}"
+                patient_obj = sma.simuler_arrivee_patient(
+                    operations=operations,
+                    urgence=urgence_obj,
+                    nom=manual_name,
+                )
+                _ensure_live_patient_state_from_event(
+                    nom=manual_name,
+                    urgence_name=patient_obj.urgence.name,
+                    operations=operations,
+                    arrivee=float(sma.timestamp),
+                )
                 st.success("Patient ajoute.")
             except Exception as exc:
                 st.error(f"Erreur ajout patient: {exc}")
